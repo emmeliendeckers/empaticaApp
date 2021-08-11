@@ -1,10 +1,12 @@
 package com.example.myempatica;
 
+import androidx.annotation.RequiresApi;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
 import android.Manifest;
+import android.app.AlertDialog;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothGattCallback;
@@ -13,13 +15,18 @@ import android.bluetooth.BluetoothGattService;
 import android.bluetooth.le.ScanCallback;
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
 import android.content.res.AssetFileDescriptor;
+import android.location.LocationManager;
+import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.IBinder;
+import android.provider.Settings;
 import android.util.Log;
 import android.view.View;
 import android.widget.Button;
@@ -54,6 +61,11 @@ public class MainActivity extends AppCompatActivity implements EmpaStatusDelegat
     private static final int REQUEST_PERMISSION_ACCESS_FINE_LOCATION = 1;
     private static final int REQUEST_ENABLE_BT = 1;
     private static final long SCAN_PERIOD = 10000; //for scanning for bluetooth devices
+
+    //private static final String TEDDY_ADDRESS = "3C:61:05:08:AD:2E"; //in de beer
+    private static final String TEDDY_ADDRESS = "3C:61:05:08:AD:76";
+    private static final String BLE_SERVICE_UUID = "ab0828b1-198e-4351-b779-901fa0e0371e";
+    private static final String BLE_CHARACTERISTIC_UUID ="4ac8a682-9736-4e5d-932b-e9b31405049c";
 
     private static final String EMPATICA_API_KEY = "f38d7dbb0e9749b1b766d4fdcfe96b1f";
     private EmpaDeviceManager empaDeviceManager;
@@ -119,6 +131,10 @@ public class MainActivity extends AppCompatActivity implements EmpaStatusDelegat
         return intentFilter;
     }
 
+    /*********************************************************************************
+     *Android Activity functions
+     ********************************************************************************/
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -132,7 +148,8 @@ public class MainActivity extends AppCompatActivity implements EmpaStatusDelegat
         connectEmpatica = findViewById(R.id.btn_empatica);
         connectEmpatica.setText("Connect Empatica");
         connectEmpatica.setOnClickListener(v -> {
-            initEmpatica();
+            empaButton();
+            //initEmpatica();
         });
 
         teddyStatus = findViewById(R.id.tv_teddy);
@@ -175,6 +192,7 @@ public class MainActivity extends AppCompatActivity implements EmpaStatusDelegat
     }
 
 
+    @RequiresApi(api = Build.VERSION_CODES.P)
     @Override
     protected void onStart() {
         super.onStart();
@@ -205,56 +223,41 @@ public class MainActivity extends AppCompatActivity implements EmpaStatusDelegat
         super.onStop();
     }
 
-    private void initEmpatica() {
-        empaDeviceManager = new EmpaDeviceManager(getApplicationContext(), this, this);
-        empaDeviceManager.authenticateWithAPIKey(EMPATICA_API_KEY);
-    }
-
-    private MappedByteBuffer loadModel() throws IOException {
-        AssetFileDescriptor assetFileDescriptor = this.getAssets().openFd("linear.tflite");
-        FileInputStream fileInputStream = new FileInputStream(assetFileDescriptor.getFileDescriptor());
-        FileChannel fileChannel = fileInputStream.getChannel();
-        long startOffset = assetFileDescriptor.getStartOffset();
-        long length = assetFileDescriptor.getLength();
-        return fileChannel.map(FileChannel.MapMode.READ_ONLY, startOffset, length);
-    }
-
-    public void inference(){
-        Timer timer = new Timer();
-        TimerTask timerTask = new TimerTask() {
-            @Override
-            public void run() {
-                float[] input = new float[6];
-                input[0] = Float.parseFloat(bvp.getText().toString());
-                input[1] = Float.parseFloat(eda.getText().toString());
-                input[2] = Float.parseFloat(temp.getText().toString());
-                input[3] = Float.parseFloat(acc_x.getText().toString());
-                input[4] = Float.parseFloat(acc_y.getText().toString());
-                input[5] = Float.parseFloat(acc_z.getText().toString());
-
-                float[][] output = new float[1][1];
-                interpreter.run(input, output);
-                stressResponse(output[0][0]);
-            }
-        };
-        timer.schedule(timerTask, 2000, 2000);
-    }
-
-    private void stressResponse(float response){
-        int stress = Math.round(response);
-        if(stress == 1){
-            updateLabel(this.stress, "stress detected");
-            characteristic.setValue("1");
-            bluetoothService.writeCharacteristic(characteristic);
-
-        }
-        else{
-            updateLabel(this.stress, "not stressed");
-            characteristic.setValue("0");
-            bluetoothService.writeCharacteristic(characteristic);
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        switch (requestCode) {
+            case REQUEST_PERMISSION_ACCESS_FINE_LOCATION:
+                // If request is cancelled, the result arrays are empty.
+                if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                    // Permission was granted
+                } else {
+                    // ask permission
+                    new AlertDialog.Builder(this)
+                            .setTitle("Location permission required")
+                            .setMessage("Without this permission bluetooth low energy devices cannot be found, allow it in order to connect to the device.")
+                            .setPositiveButton("Retry", new DialogInterface.OnClickListener() {
+                                public void onClick(DialogInterface dialog, int which) {
+                                        // the "never ask again" flag is set so the permission requests is disabled, try open app settings to enable the permission
+                                        Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                                        Uri uri = Uri.fromParts("package", getPackageName(), null);
+                                        intent.setData(uri);
+                                        startActivity(intent);
+                                }
+                            })
+                            .setNegativeButton("Exit application", new DialogInterface.OnClickListener() {
+                                public void onClick(DialogInterface dialog, int which) {
+                                    // without permission exit is the only way
+                                    finish();
+                                }
+                            })
+                            .show();
+                }
+                break;
         }
     }
-
+    /**************************************************************************
+     * Teddybeer methods (BLE)
+     *************************************************************************/
     private void initTeddy() {
         deviceList = new ArrayList<>();
 
@@ -271,7 +274,8 @@ public class MainActivity extends AppCompatActivity implements EmpaStatusDelegat
         updateLabel(teddyStatus, "stop scan");
         bleScanner.stop();
         for(BluetoothDevice d : deviceList){
-            if(d.getAddress().equals("3C:61:05:08:AD:2E")){
+            if(d.getAddress().equals(TEDDY_ADDRESS)){
+                teddyConnected = true;
                 teddyDevice = d;
                 Intent gattServiceIntent = new Intent(this, BluetoothLeService.class);
                 bindService(gattServiceIntent, serviceConnection, Context.BIND_AUTO_CREATE);
@@ -287,10 +291,10 @@ public class MainActivity extends AppCompatActivity implements EmpaStatusDelegat
         if (bluetoothService != null) {
             List<BluetoothGattService> servicesList = bluetoothService.getSupportedGattServices();
             for (BluetoothGattService service : servicesList) {
-                if(service.getUuid().toString().equals("ab0828b1-198e-4351-b779-901fa0e0371e")) {
+                if(service.getUuid().toString().equals(BLE_SERVICE_UUID)) {
                     List<BluetoothGattCharacteristic> characteristicsList = service.getCharacteristics();
                     for (BluetoothGattCharacteristic characteristic : characteristicsList) {
-                        if(characteristic.getUuid().toString().equals("4ac8a682-9736-4e5d-932b-e9b31405049c")){
+                        if(characteristic.getUuid().toString().equals(BLE_CHARACTERISTIC_UUID)){
                             this.characteristic = characteristic;
                         }
                     }
@@ -300,33 +304,41 @@ public class MainActivity extends AppCompatActivity implements EmpaStatusDelegat
     }
 
     private void sendOne() {
-        if(bluetoothService != null){
+        if(teddyConnected){
             characteristic.setValue("1");
             bluetoothService.writeCharacteristic(characteristic);
         }
     }
 
     private void sendZero() {
-        if(bluetoothService != null){
+        if(teddyConnected){
             characteristic.setValue("0");
             bluetoothService.writeCharacteristic(characteristic);
         }
     }
 
-    //change one of the textviews
-    private void updateLabel(TextView label, String status) {
-        runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                label.setText(status);
-            }
-        });
+    /*******************************************************************************
+     * Empatica methods
+     ******************************************************************************/
+
+    private void empaButton(){
+        if (empaConnected){
+            //disconnect
+            empaDeviceManager.disconnect();
+        }
+        else {
+            //connect
+            //initEmpatica();
+            empaDeviceManager = new EmpaDeviceManager(getApplicationContext(), this, this);
+            empaDeviceManager.authenticateWithAPIKey(EMPATICA_API_KEY);
+        }
     }
 
-    /***********************************************************************
-     * Methods for discovering and connecting to Empatica devices
-     *
-     ***********************************************************************/
+    private void initEmpatica() {
+        empaDeviceManager = new EmpaDeviceManager(getApplicationContext(), this, this);
+        empaDeviceManager.authenticateWithAPIKey(EMPATICA_API_KEY);
+    }
+
     @Override
     public void didDiscoverDevice(EmpaticaDevice device, String deviceLabel, int rssi, boolean allowed) {
         //allowed when device is linked to API Key
@@ -348,9 +360,6 @@ public class MainActivity extends AppCompatActivity implements EmpaStatusDelegat
     @Override
     public void didEstablishConnection() {
         empaConnected = true;
-        if(teddyConnected){
-            //go to next activity
-        }
     }
 
     @Override
@@ -379,6 +388,7 @@ public class MainActivity extends AppCompatActivity implements EmpaStatusDelegat
         switch (status){
             case READY:
                 empaDeviceManager.startScanning();
+                updateLabel(empaticaStatus, "turn on your Empatica E4");
                 break;
             case DISCOVERING:
                 updateLabel(empaticaStatus, "scanning for devices...");
@@ -388,6 +398,7 @@ public class MainActivity extends AppCompatActivity implements EmpaStatusDelegat
                 break;
             case CONNECTED:
                 updateLabel(empaticaStatus, "connected to: " + empaDeviceManager.getActiveDevice().getName());
+                updateButton(connectEmpatica, "Disconnect Empatica");
                 runOnUiThread(new Runnable() {
 
                     @Override
@@ -403,6 +414,8 @@ public class MainActivity extends AppCompatActivity implements EmpaStatusDelegat
                 break;
             case DISCONNECTED:
                 updateLabel(empaticaStatus, "disconnected");
+                updateButton(connectEmpatica, "Connect Empatica");
+                empaConnected = false;
                 runOnUiThread(new Runnable() {
 
                     @Override
@@ -458,8 +471,6 @@ public class MainActivity extends AppCompatActivity implements EmpaStatusDelegat
 
     }
 
-
-
     @Override
     public void didRequestEnableBluetooth() {
 
@@ -467,12 +478,91 @@ public class MainActivity extends AppCompatActivity implements EmpaStatusDelegat
 
     @Override
     public void bluetoothStateChanged() {
-
+        BluetoothAdapter bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
+        if (!bluetoothAdapter.isEnabled()) {
+            Intent enableBT = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
+            startActivityForResult(enableBT, REQUEST_ENABLE_BT);
+        }
     }
 
     @Override
     public void didUpdateOnWristStatus(int status) {
 
+    }
+
+    /**************************************************************
+     * Neural Network methods
+     **************************************************************/
+
+
+    private MappedByteBuffer loadModel() throws IOException {
+        AssetFileDescriptor assetFileDescriptor = this.getAssets().openFd("linear.tflite");
+        FileInputStream fileInputStream = new FileInputStream(assetFileDescriptor.getFileDescriptor());
+        FileChannel fileChannel = fileInputStream.getChannel();
+        long startOffset = assetFileDescriptor.getStartOffset();
+        long length = assetFileDescriptor.getLength();
+        return fileChannel.map(FileChannel.MapMode.READ_ONLY, startOffset, length);
+    }
+
+    public void inference(){
+        Timer timer = new Timer();
+        TimerTask timerTask = new TimerTask() {
+            @Override
+            public void run() {
+                float[] input = new float[6];
+                input[0] = Float.parseFloat(bvp.getText().toString());
+                input[1] = Float.parseFloat(eda.getText().toString());
+                input[2] = Float.parseFloat(temp.getText().toString());
+                input[3] = Float.parseFloat(acc_x.getText().toString());
+                input[4] = Float.parseFloat(acc_y.getText().toString());
+                input[5] = Float.parseFloat(acc_z.getText().toString());
+
+                float[][] output = new float[1][1];
+                interpreter.run(input, output);
+                stressResponse(output[0][0]);
+            }
+        };
+        timer.schedule(timerTask, 2000, 2000);
+    }
+
+    private void stressResponse(float response){
+        int stress = Math.round(response);
+        if(stress == 1){
+            updateLabel(this.stress, "stress detected");
+            if(teddyConnected){
+                characteristic.setValue("1");
+                bluetoothService.writeCharacteristic(characteristic);
+            }
+        }
+        else{
+            updateLabel(this.stress, "not stressed");
+            if(teddyConnected){
+                characteristic.setValue("0");
+                bluetoothService.writeCharacteristic(characteristic);
+            }
+        }
+    }
+
+    /***********************************************************************
+     * UI methods
+     ***********************************************************************/
+    //change one of the textviews
+    private void updateLabel(TextView label, String status) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                label.setText(status);
+            }
+        });
+    }
+
+    private void updateButton(Button button, String text){
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                button.setText(text);
+            }
+        });
     }
 
     @Override
